@@ -231,3 +231,95 @@
         false
     )
 )
+
+
+(define-constant ERR_NO_STREAK_DATA (err u105))
+
+(define-map player-streaks
+    { game-id: uint, player: principal }
+    {
+        current-streak: uint,
+        longest-streak: uint,
+        last-score: uint,
+        streak-started-at: uint,
+        total-streak-points: uint
+    }
+)
+
+(define-map streak-achievements
+    { game-id: uint, player: principal, milestone: uint }
+    {
+        achieved-at: uint,
+        streak-length: uint,
+        bonus-points: uint
+    }
+)
+
+(define-private (update-player-streak (game-id uint) (player principal) (new-score uint))
+    (let
+        (
+            (current-streak-data (default-to 
+                { current-streak: u0, longest-streak: u0, last-score: u0, 
+                  streak-started-at: u0, total-streak-points: u0 }
+                (map-get? player-streaks { game-id: game-id, player: player })))
+            (last-score (get last-score current-streak-data))
+            (current-streak (get current-streak current-streak-data))
+            (is-improvement (> new-score last-score))
+            (new-streak-count (if is-improvement (+ current-streak u1) u1))
+            (streak-bonus (calculate-streak-bonus new-streak-count))
+        )
+        (map-set player-streaks
+            { game-id: game-id, player: player }
+            {
+                current-streak: new-streak-count,
+                longest-streak: (if (> new-streak-count (get longest-streak current-streak-data)) 
+                                   new-streak-count 
+                                   (get longest-streak current-streak-data)),
+                last-score: new-score,
+                streak-started-at: (if is-improvement 
+                                     (get streak-started-at current-streak-data)
+                                     stacks-block-height),
+                total-streak-points: (+ (get total-streak-points current-streak-data) streak-bonus)
+            }
+        )
+        (check-streak-achievements game-id player new-streak-count)
+    )
+)
+
+(define-private (calculate-streak-bonus (streak-length uint))
+    (if (>= streak-length u10) u50
+        (if (>= streak-length u5) u20
+            (if (>= streak-length u3) u10 u0)))
+)
+
+(define-private (check-streak-achievements (game-id uint) (player principal) (streak uint))
+    (let
+        (
+            (milestone (if (>= streak u10) u10
+                          (if (>= streak u5) u5
+                              (if (>= streak u3) u3 u0))))
+            (bonus (calculate-streak-bonus streak))
+        )
+        (if (and (> milestone u0) 
+                 (is-none (map-get? streak-achievements 
+                                   { game-id: game-id, player: player, milestone: milestone })))
+            (map-set streak-achievements
+                { game-id: game-id, player: player, milestone: milestone }
+                {
+                    achieved-at: stacks-block-height,
+                    streak-length: streak,
+                    bonus-points: bonus
+                }
+            )
+            true
+        )
+    )
+)
+
+(define-read-only (get-player-streak (game-id uint) (player principal))
+    (map-get? player-streaks { game-id: game-id, player: player })
+)
+
+(define-read-only (get-streak-achievement (game-id uint) (player principal) (milestone uint))
+    (map-get? streak-achievements { game-id: game-id, player: player, milestone: milestone })
+)
