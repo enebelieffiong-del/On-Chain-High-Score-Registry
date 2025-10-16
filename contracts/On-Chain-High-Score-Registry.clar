@@ -5,6 +5,11 @@
 (define-constant ERR_INVALID_PROOF (err u103))
 (define-constant ERR_SCORE_TOO_LOW (err u104))
 
+(define-constant ERR_BOUNTY_TOO_LOW (err u106))
+(define-constant ERR_BOUNTY_CLAIMED (err u107))
+(define-constant ERR_BOUNTY_NOT_FOUND (err u108))
+(define-constant ERR_MILESTONE_NOT_REACHED (err u109))
+
 (define-data-var contract-owner principal tx-sender)
 (define-data-var total-games uint u0)
 (define-data-var total-scores uint u0)
@@ -322,4 +327,88 @@
 
 (define-read-only (get-streak-achievement (game-id uint) (player principal) (milestone uint))
     (map-get? streak-achievements { game-id: game-id, player: player, milestone: milestone })
+)
+
+(define-map score-bounties
+    { game-id: uint, milestone-score: uint }
+    {
+        sponsor: principal,
+        prize-amount: uint,
+        created-at: uint,
+        claimed: bool,
+        claimer: (optional principal)
+    }
+)
+
+(define-map player-bounty-claims
+    { game-id: uint, player: principal }
+    {
+        total-claimed: uint,
+        claim-count: uint,
+        last-claim-at: uint
+    }
+)
+
+(define-public (drop-bounty (game-id uint) (milestone-score uint) (prize-amount uint))
+    (let
+        (
+            (game (unwrap! (map-get? games { game-id: game-id }) ERR_GAME_NOT_FOUND))
+            (existing-bounty (map-get? score-bounties { game-id: game-id, milestone-score: milestone-score }))
+        )
+        (asserts! (get active game) ERR_GAME_NOT_FOUND)
+        (asserts! (>= prize-amount u1000000) ERR_BOUNTY_TOO_LOW)
+        (asserts! (is-none existing-bounty) ERR_BOUNTY_CLAIMED)
+        
+        (try! (stx-transfer? prize-amount tx-sender (as-contract tx-sender)))
+        
+        (map-set score-bounties
+            { game-id: game-id, milestone-score: milestone-score }
+            {
+                sponsor: tx-sender,
+                prize-amount: prize-amount,
+                created-at: stacks-block-height,
+                claimed: false,
+                claimer: none
+            }
+        )
+        (ok true)
+    )
+)
+
+(define-public (claim-bounty (game-id uint) (milestone-score uint))
+    (let
+        (
+            (bounty (unwrap! (map-get? score-bounties { game-id: game-id, milestone-score: milestone-score }) ERR_BOUNTY_NOT_FOUND))
+            (player-stats (unwrap! (map-get? player-scores { game-id: game-id, player: tx-sender }) ERR_GAME_NOT_FOUND))
+            (claim-history (default-to { total-claimed: u0, claim-count: u0, last-claim-at: u0 }
+                (map-get? player-bounty-claims { game-id: game-id, player: tx-sender })))
+        )
+        (asserts! (not (get claimed bounty)) ERR_BOUNTY_CLAIMED)
+        (asserts! (>= (get best-score player-stats) milestone-score) ERR_MILESTONE_NOT_REACHED)
+        
+        (try! (as-contract (stx-transfer? (get prize-amount bounty) tx-sender (unwrap-panic (some tx-sender)))))
+        
+        (map-set score-bounties
+            { game-id: game-id, milestone-score: milestone-score }
+            (merge bounty { claimed: true, claimer: (some tx-sender) })
+        )
+        
+        (map-set player-bounty-claims
+            { game-id: game-id, player: tx-sender }
+            {
+                total-claimed: (+ (get total-claimed claim-history) (get prize-amount bounty)),
+                claim-count: (+ (get claim-count claim-history) u1),
+                last-claim-at: stacks-block-height
+            }
+        )
+        (ok (get prize-amount bounty))
+    )
+)
+
+(define-read-only (get-bounty-info (game-id uint) (milestone-score uint))
+    (map-get? score-bounties { game-id: game-id, milestone-score: milestone-score })
+)
+
+(define-read-only (get-player-claims (game-id uint) (player principal))
+    (map-get? player-bounty-claims { game-id: game-id, player: player })
 )
