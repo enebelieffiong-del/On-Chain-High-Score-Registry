@@ -10,6 +10,13 @@
 (define-constant ERR_BOUNTY_NOT_FOUND (err u108))
 (define-constant ERR_MILESTONE_NOT_REACHED (err u109))
 
+(define-constant ERR_TOURNAMENT_NOT_FOUND (err u110))
+(define-constant ERR_TOURNAMENT_EXPIRED (err u111))
+(define-constant ERR_TOURNAMENT_ACTIVE (err u112))
+(define-constant ERR_ALREADY_JOINED (err u113))
+(define-constant ERR_ENTRY_FEE_MISMATCH (err u114))
+(define-constant ERR_NOT_FINALIZED (err u115))
+
 (define-data-var contract-owner principal tx-sender)
 (define-data-var total-games uint u0)
 (define-data-var total-scores uint u0)
@@ -411,4 +418,90 @@
 
 (define-read-only (get-player-claims (game-id uint) (player principal))
     (map-get? player-bounty-claims { game-id: game-id, player: player })
+)
+
+(define-map tournaments
+    { tournament-id: uint }
+    {
+        game-id: uint,
+        organizer: principal,
+        entry-fee: uint,
+        prize-pool: uint,
+        start-block: uint,
+        end-block: uint,
+        participant-count: uint,
+        finalized: bool
+    }
+)
+
+(define-map tournament-participants
+    { tournament-id: uint, player: principal }
+    { joined-at: uint, final-score: uint }
+)
+
+(define-data-var total-tournaments uint u0)
+
+(define-public (launch-tournament (game-id uint) (entry-fee uint) (duration-blocks uint))
+    (let
+        (
+            (game (unwrap! (map-get? games { game-id: game-id }) ERR_GAME_NOT_FOUND))
+            (tournament-id (+ (var-get total-tournaments) u1))
+            (current-block stacks-block-height)
+        )
+        (asserts! (is-eq tx-sender (get owner game)) ERR_UNAUTHORIZED)
+        (asserts! (> duration-blocks u0) ERR_INVALID_SCORE)
+        
+        (map-set tournaments
+            { tournament-id: tournament-id }
+            {
+                game-id: game-id,
+                organizer: tx-sender,
+                entry-fee: entry-fee,
+                prize-pool: u0,
+                start-block: current-block,
+                end-block: (+ current-block duration-blocks),
+                participant-count: u0,
+                finalized: false
+            }
+        )
+        (var-set total-tournaments tournament-id)
+        (ok tournament-id)
+    )
+)
+
+(define-public (join-tournament (tournament-id uint))
+    (let
+        (
+            (tournament (unwrap! (map-get? tournaments { tournament-id: tournament-id }) ERR_TOURNAMENT_NOT_FOUND))
+            (current-block stacks-block-height)
+        )
+        (asserts! (< current-block (get end-block tournament)) ERR_TOURNAMENT_EXPIRED)
+        (asserts! (is-none (map-get? tournament-participants { tournament-id: tournament-id, player: tx-sender })) ERR_ALREADY_JOINED)
+        
+        (if (> (get entry-fee tournament) u0)
+            (try! (stx-transfer? (get entry-fee tournament) tx-sender (as-contract tx-sender)))
+            true
+        )
+        
+        (map-set tournament-participants
+            { tournament-id: tournament-id, player: tx-sender }
+            { joined-at: current-block, final-score: u0 }
+        )
+        (map-set tournaments
+            { tournament-id: tournament-id }
+            (merge tournament {
+                participant-count: (+ (get participant-count tournament) u1),
+                prize-pool: (+ (get prize-pool tournament) (get entry-fee tournament))
+            })
+        )
+        (ok true)
+    )
+)
+
+(define-read-only (get-tournament-info (tournament-id uint))
+    (map-get? tournaments { tournament-id: tournament-id })
+)
+
+(define-read-only (is-tournament-participant (tournament-id uint) (player principal))
+    (map-get? tournament-participants { tournament-id: tournament-id, player: player })
 )
